@@ -130,28 +130,39 @@ func NewSequencer(
 	}
 }
 
-// TODO: This currently doesn't use the batch api for fetching the required nodes. This
-// would be more efficient but requires refactoring.
 func (s Sequencer) buildMerkleTreeFromStorageAtRoot(ctx context.Context, root *types.LogRootV1, tx storage.TreeTX) (*merkle.CompactMerkleTree, error) {
-	mt, err := merkle.NewCompactMerkleTreeWithState(s.hasher, int64(root.TreeSize), func(depth int, index int64) ([]byte, error) {
-		nodeID, err := storage.NewNodeIDForTreeCoords(int64(depth), index, maxTreeDepth)
-		if err != nil {
-			glog.Warningf("%x: Failed to create nodeID: %v", s.signer.KeyHint, err)
-			return nil, err
+	mt, err := merkle.NewCompactMerkleTreeWithState(s.hasher, int64(root.TreeSize), func(coords []merkle.NodeCoords, sizeBits int) ([][]byte, error) {
+		nodeIDs := make([]storage.NodeID, len(coords))
+		for i, c := range coords {
+			nodeID, err := storage.NewNodeIDForTreeCoords(int64(c.Depth), c.Index, maxTreeDepth)
+			if err != nil {
+				glog.Warningf("%x: Failed to create nodeID: %v", s.signer.KeyHint, err)
+				return nil, err
+			}
+			nodeIDs[i] = nodeID
 		}
-		nodes, err := tx.GetMerkleNodes(ctx, int64(root.Revision), []storage.NodeID{nodeID})
 
+		nodes, err := tx.GetMerkleNodes(ctx, int64(root.Revision), nodeIDs)
 		if err != nil {
 			glog.Warningf("%x: Failed to get Merkle nodes: %v", s.signer.KeyHint, err)
 			return nil, err
 		}
 
-		// We expect to get exactly one node here
-		if nodes == nil || len(nodes) != 1 {
-			return nil, fmt.Errorf("%x: Did not retrieve one node while loading CompactMerkleTree, got %#v for ID %v@%v", s.signer.KeyHint, nodes, nodeID.String(), root.Revision)
+		// We expect to get exactly len(nodeIDs) nodes here
+		if nodes == nil || len(nodes) != len(nodeIDs) {
+			return nil, fmt.Errorf("%x: Did not retrieve %d node while loading CompactMerkleTree, got %#v for revision %v", s.signer.KeyHint, len(nodeIDs), nodes, root.Revision)
 		}
 
-		return nodes[0].Hash, nil
+		// Convert slice to expected format
+		nodeMap := make([][]byte, sizeBits)
+		for i, n := range nodes {
+			// nodeIDs[i].PrefixLenBits = int(maxTreeDepth - int(coords[i].Depth))
+			// coords[i].Depth = maxTreeDepth - nodeIDs[i].PrefixLenBits
+			// nodeMap[maxTreeDepth-nodeIDs[i].PrefixLenBits] = n.Hash
+			nodeMap[coords[i].Depth] = n.Hash
+		}
+
+		return nodeMap, nil
 	}, root.RootHash)
 
 	return mt, err

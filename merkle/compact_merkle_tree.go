@@ -49,9 +49,14 @@ func isPerfectTree(x int64) bool {
 	return x != 0 && (x&(x-1) == 0)
 }
 
+type NodeCoords struct {
+	Depth int
+	Index int64
+}
+
 // GetNodeFunc is a function prototype which can look up particular nodes within a non-compact Merkle tree.
 // Used by the CompactMerkleTree to populate itself with correct state when starting up with a non-empty tree.
-type GetNodeFunc func(depth int, index int64) ([]byte, error)
+type GetNodeFunc func([]NodeCoords, int) ([][]byte, error)
 
 // NewCompactMerkleTreeWithState creates a new CompactMerkleTree for the passed in |size|.
 // This can fail if the nodes required to recreate the tree state cannot be fetched or the calculated
@@ -74,19 +79,20 @@ func NewCompactMerkleTreeWithState(hasher hashers.LogHasher, size int64, f GetNo
 		r.root = append(make([]byte, 0, len(expectedRoot)), expectedRoot...)
 		r.nodes[sizeBits-1] = r.root
 	} else {
-		// Pull in the nodes we need to repopulate our compact tree and verify the root
+		var coords []NodeCoords
 		for depth := 0; depth < sizeBits; depth++ {
 			if size&1 == 1 {
 				index := size - 1
-				log.V(1).Infof("fetching d: %d i: %d, leaving size %d", depth, index, size)
-				h, err := f(depth, index)
-				if err != nil {
-					log.Warningf("Failed to fetch node depth %d index %d: %s", depth, index, err)
-					return nil, err
-				}
-				r.nodes[depth] = h
+				coords = append(coords, NodeCoords{Depth: depth, Index: index})
 			}
 			size >>= 1
+		}
+
+		// Pull in the nodes we need to repopulate our compact tree and calculate the root
+		var err error
+		r.nodes, err = f(coords, sizeBits)
+		if err != nil {
+			log.Warningf("Failed to fetch nodes: %s", err)
 		}
 		r.recalculateRoot(func(depth int, index int64, hash []byte) error {
 			return nil
